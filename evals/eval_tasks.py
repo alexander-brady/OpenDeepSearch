@@ -213,7 +213,7 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
 
     try:
         answers = []
-        for majority_step in range(5):
+        for majority_step in range(1):
             if action_type == "vanilla":
                 def get_vanilla_response():
                     response = agent(
@@ -253,7 +253,7 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
         # Add to message list
         messages = [{"role": "system", "content": MAJORITY_VOTE_PROMPT}]
         messages.append({"role": "user", "content": user_content})
-        answer = model(messages).content
+        # answer = model(messages).content
     except Exception as e:
         print("Error on ", augmented_question, e)
         intermediate_steps = []
