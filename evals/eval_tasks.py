@@ -29,9 +29,75 @@ load_dotenv()
 
 APPEND_ANSWER_LOCK = threading.Lock()
 
+MAJORITY_VOTE_PROMPT = """
+You are an expert evaluator tasked with selecting the best answer to a question based on a majority vote across multiple proposed answers.
+
+Your job is to:
+1. Read the **question**.
+2. Read the list of proposed **answers**.
+3. Identify the answer that appears **most frequently**.
+4. If there's a tie, select the clearest and most accurate answer.
+5. Only output a short concise answer. Verbatim answers should not even be considered for the majority vote.
+
+Below are some examples of how you should behave:
+
+---
+
+Example 1:
+
+Question: What is the capital of France?
+
+Answers:
+1. Paris
+2. Paris
+3. Lyon
+4. Paris
+5. Marseille
+
+Output:
+Paris
+
+---
+
+Example 2:
+
+Question: What is 2 + 2?
+
+Answers:
+1. 4
+2. Four
+3. 4
+4. 5
+5. 4
+
+Output:
+4
+
+---
+
+Example 3:
+
+Question: Who wrote 'To Kill a Mockingbird'?
+
+Answers:
+1. Harper Lee
+2. Harper Lee
+3. J.K. Rowling
+4. Harper Lee
+5. Harper Lee
+
+Output:
+Harper Lee
+
+---
+
+Now, follow the same logic for the next question and list of answers.
+"""
+
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Runs an agent powered by the given model on smolagent benchmark.")
+    parser = argparse.ArgumentParser(
+        description="Runs an agent powered by the given model on smolagent benchmark.")
     parser.add_argument(
         "--date",
         type=str,
@@ -42,13 +108,14 @@ def parse_arguments():
         "--eval-tasks",
         type=str,
         nargs="+",
-        default=["./evals/datasets/frames_test_set.csv", "./evals/datasets/simple_qa_test_set.csv"],
+        default=["./evals/datasets/frames_test_set.csv",
+                 "./evals/datasets/simple_qa_test_set.csv"],
         help="List of evaluation task paths",
     )
     parser.add_argument(
         "--search-model-id",
         type=str,
-        default="fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct",
+        default=None,  # "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct",
         help="The model ID to use for the search tool (defaults to same as model-id)",
     )
     parser.add_argument(
@@ -61,7 +128,7 @@ def parse_arguments():
     parser.add_argument(
         "--model-id",
         type=str,
-        default="fireworks_ai/accounts/fireworks/models/qwq-32b",
+        default=None,  # "fireworks_ai/accounts/fireworks/models/qwq-32b",
         help="The model ID to use for the specified model type",
     )
     parser.add_argument(
@@ -125,16 +192,18 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
         agent = model
     elif action_type == "codeact":
         agent = CodeAgent(
-            tools=[OpenDeepSearchTool(model_name=search_model_id or model.model_id)],
+            tools=[OpenDeepSearchTool(
+                model_name=search_model_id or model.model_id)],
             model=model,
             additional_authorized_imports=["numpy"],
             max_steps=15,
         )
     elif action_type == "tool-calling":
         agent = ToolCallingAgent(
-            tools=[OpenDeepSearchTool(model_name=search_model_id or model.model_id), PythonInterpreterTool()],
+            tools=[OpenDeepSearchTool(
+                model_name=search_model_id or model.model_id), PythonInterpreterTool()],
             model=model,
-            additional_authorized_imports=["numpy"],
+            # additional_authorized_imports=["numpy"],
             max_steps=15,
         )
 
@@ -143,26 +212,48 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
     TIMEOUT_SECONDS = 300  # 5 minutes timeout
 
     try:
-        if action_type == "vanilla":
-            def get_vanilla_response():
-                response = agent([{"role": "user", "content": augmented_question}])
-                return response.content, agent.last_output_token_count
-            
-            answer, token_count = run_with_timeout(get_vanilla_response, TIMEOUT_SECONDS)
-            intermediate_steps = answer
-        else:
-            def get_agent_response():
-                response = str(agent.run(augmented_question))
-                token_count = agent.monitor.get_total_token_counts()
-                # Remove memory from logs to make them more compact.
-                for step in agent.memory.steps:
-                    if isinstance(step, ActionStep):
-                        step.agent_memory = None
-                return response, token_count, str(agent.memory.steps)
-            
-            answer, token_count, intermediate_steps = run_with_timeout(get_agent_response, TIMEOUT_SECONDS)
+        answers = []
+        for majority_step in range(5):
+            if action_type == "vanilla":
+                def get_vanilla_response():
+                    response = agent(
+                        [{"role": "user", "content": augmented_question}])
+                    return response.content, agent.last_output_token_count
+
+                answer, token_count = run_with_timeout(
+                    get_vanilla_response, TIMEOUT_SECONDS)
+                intermediate_steps = answer
+            else:
+                def get_agent_response():
+                    response = str(agent.run(augmented_question))
+                    token_count = agent.monitor.get_total_token_counts()
+                    # Remove memory from logs to make them more compact.
+                    for step in agent.memory.steps:
+                        if isinstance(step, ActionStep):
+                            step.agent_memory = None
+                    return response, token_count, str(agent.memory.steps)
+
+                answer, token_count, intermediate_steps = run_with_timeout(
+                    get_agent_response, TIMEOUT_SECONDS)
+                answers.append(answer)
 
         end_time = time.time()
+        formatted_answers = "\n".join(
+            [f"{i+1}. {a}" for i, a in enumerate(answers)])
+
+        # Combine with the question
+        user_content = f"""Question: {augmented_question}
+
+        Answers:
+        {formatted_answers}
+
+        Choose the most frequent and relevant answer. Output it verbatim.
+        """
+
+        # Add to message list
+        messages = [{"role": "system", "content": MAJORITY_VOTE_PROMPT}]
+        messages.append({"role": "user", "content": user_content})
+        answer = model(messages).content
     except Exception as e:
         print("Error on ", augmented_question, e)
         intermediate_steps = []
@@ -172,8 +263,9 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
         "agent_action_type": action_type,
         "original_question": example["question"],
         "answer": answer,
+        "answers": answers,
         "true_answer": example["true_answer"],
-        "intermediate_steps": intermediate_steps,
+        "intermediate_steps": 'incomment if you want to see this',  # intermediate_steps,
         "start_time": start_time,
         "end_time": end_time,
         "token_counts": token_count,
@@ -193,28 +285,32 @@ def answer_questions(
 ):
     date = date or datetime.date.today().isoformat()
     model_id = model.model_id
-    
+
     # Create directory structure: output/model_id/action_type/task
     model_dir = model_id.replace('/', '__')
-    
+
     for task in eval_ds:
         task_dir = os.path.join(output_dir, model_dir, action_type, task)
         os.makedirs(task_dir, exist_ok=True)
-        
+
         for trial in range(num_trials):
             file_name = f"{task_dir}/{model_id.replace('/', '__')}__{action_type}__{task}__trial{trial}.jsonl"
-            print(f"Starting processing trial {trial + 1}/{num_trials} and writing output to '{file_name}'")
+            print(
+                f"Starting processing trial {trial + 1}/{num_trials} and writing output to '{file_name}'")
             answered_questions = []
             if os.path.exists(file_name):
                 with open(file_name, "r") as f:
                     for line in f:
-                        answered_questions.append(json.loads(line)["original_question"])
-            examples_todo = [example for example in eval_ds[task] if example["question"] not in answered_questions]
+                        answered_questions.append(
+                            json.loads(line)["original_question"])
+            examples_todo = [example for example in eval_ds[task]
+                             if example["question"] not in answered_questions]
             print(f"Launching {parallel_workers} parallel workers.")
 
             with ThreadPoolExecutor(max_workers=parallel_workers) as exe:
                 futures = [
-                    exe.submit(answer_single_question, example, model, file_name, action_type, search_model_id) 
+                    exe.submit(answer_single_question, example, model,
+                               file_name, action_type, search_model_id)
                     for example in examples_todo
                 ]
                 for f in tqdm(as_completed(futures), total=len(examples_todo), desc="Processing tasks"):
