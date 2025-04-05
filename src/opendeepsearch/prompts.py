@@ -567,7 +567,8 @@ Above examples were using notional tools that might not exist for you. You only 
 {%- endfor %}
 
 {%- if managed_agents and managed_agents.values() | list %}
-You can also give tasks to team members.
+You can also give tasks to team members. Some tasks are formulated in long nested sentences. In this way it makes sence, to first structure,
+how you step by step are going to find out the answer. Like this, you can easier combine important information.  
 Calling a team member works the same as for calling a tool: simply, the only argument you can give in the call is 'task', a long string explaining your task.
 Given that this team member is a real human, you should be very verbose in your task.
 Here is a list of the team members that you can call:
