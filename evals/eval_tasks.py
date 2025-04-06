@@ -12,7 +12,7 @@ from datasets import Dataset
 from dotenv import load_dotenv
 from tqdm import tqdm
 from opendeepsearch import OpenDeepSearchTool, ListDeepSearchTool, load_config
-from opendeepsearch.prompts import MAJORITY_VOTE_PROMPT
+from opendeepsearch.prompts import MAJORITY_VOTE_PROMPT, REACT_PROMPT
 
 from smolagents import (
     AgentError,
@@ -188,29 +188,33 @@ def run_with_timeout(func, timeout):
 
 
 def answer_single_question(example, model, answers_file, action_type, search_model_id=None, majority_votes=1):
-    if action_type == "vanilla":
-        agent = model
-    elif action_type == "codeact":
-        agent = CodeAgent(
-            tools=[
-                ListDeepSearchTool(model_name=search_model_id or model.model_id), 
-                OpenDeepSearchTool(model_name=search_model_id or model.model_id)],
-            model=model,
-            additional_authorized_imports=["numpy"],
-            max_steps=15,
-        )
-    elif action_type == "tool-calling":
-        agent = ToolCallingAgent(
-            tools=[
-                ListDeepSearchTool(model_name=search_model_id or model.model_id), 
-                OpenDeepSearchTool(model_name=search_model_id or model.model_id), 
-                PythonInterpreterTool()
-            ],
-            model=model,
-            # additional_authorized_imports=["numpy"],
-            max_steps=15,
-        )
-
+    def init_agent():
+        if action_type == "vanilla":
+            agent = model
+        elif action_type == "codeact":
+            agent = CodeAgent(
+                tools=[
+                    ListDeepSearchTool(model_name=search_model_id or model.model_id), 
+                    OpenDeepSearchTool(model_name=search_model_id or model.model_id)],
+                model=model,
+                additional_authorized_imports=["numpy", "pandas"],
+                max_steps=15,
+                prompt_templates=REACT_PROMPT
+            )
+        elif action_type == "tool-calling":
+            agent = ToolCallingAgent(
+                tools=[
+                    ListDeepSearchTool(model_name=search_model_id or model.model_id), 
+                    OpenDeepSearchTool(model_name=search_model_id or model.model_id), 
+                    PythonInterpreterTool()
+                ],
+                model=model,
+                additional_authorized_imports=["numpy", "pandas"],
+                max_steps=15,
+                prompt_templates=REACT_PROMPT,
+            )
+        return agent
+      
     augmented_question = example["question"]
     start_time = time.time()
     TIMEOUT_SECONDS = 300  # 5 minutes timeout
@@ -219,6 +223,7 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
         answers = []
         tokens = 0
         for _ in range(majority_votes):
+            agent = init_agent()
             if action_type == "vanilla":
                 def get_vanilla_response():
                     response = agent([{"role": "user", "content": augmented_question}])
