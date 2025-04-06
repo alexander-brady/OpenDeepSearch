@@ -10,10 +10,11 @@ import asyncio
 import nest_asyncio
 load_dotenv()
 
+
 class OpenDeepSearchAgent:
     def __init__(
         self,
-        model: Optional[str] = None, #We use LiteLLM to call the model
+        model: Optional[str] = None,  # We use LiteLLM to call the model
         system_prompt: Optional[str] = SEARCH_SYSTEM_PROMPT,
         search_provider: Literal["serper", "searxng"] = "serper",
         serper_api_key: Optional[str] = None,
@@ -72,7 +73,8 @@ class OpenDeepSearchAgent:
         self.source_processor = SourceProcessor(**source_processor_config)
 
         # Initialize LLM settings
-        self.model = model if model is not None else os.getenv("LITELLM_SEARCH_MODEL_ID", os.getenv("LITELLM_MODEL_ID", "openrouter/google/gemini-2.0-flash-001"))
+        self.model = model if model is not None else os.getenv("LITELLM_SEARCH_MODEL_ID", os.getenv(
+            "LITELLM_MODEL_ID", "openrouter/google/gemini-2.0-flash-001"))
         self.temperature = temperature
         self.top_p = top_p
         self.system_prompt = system_prompt
