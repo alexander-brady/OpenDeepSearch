@@ -11,6 +11,7 @@ output/
 
 # Distribution / packaging
 .Python
+.vscode/
 build/
 develop-eggs/
 dist/
@@ -126,6 +127,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.example
 .venv
 env/
 venv/

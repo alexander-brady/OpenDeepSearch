@@ -7,12 +7,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import datasets
 import pandas as pd
 from datasets import Dataset
 from dotenv import load_dotenv
 from tqdm import tqdm
-from opendeepsearch import OpenDeepSearchTool
+from opendeepsearch import OpenDeepSearchTool, ListDeepSearchTool, load_config
+from opendeepsearch.prompts import MAJORITY_VOTE_PROMPT
 
 from smolagents import (
     AgentError,
@@ -115,7 +115,7 @@ def parse_arguments():
     parser.add_argument(
         "--search-model-id",
         type=str,
-        default=None,  # "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct",
+        default=os.getenv("LITELLM_SEARCH_MODEL_ID", os.getenv("LITELLM_MODEL_ID", "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct")),
         help="The model ID to use for the search tool (defaults to same as model-id)",
     )
     parser.add_argument(
@@ -128,7 +128,7 @@ def parse_arguments():
     parser.add_argument(
         "--model-id",
         type=str,
-        default=None,  # "fireworks_ai/accounts/fireworks/models/qwq-32b",
+        default=os.getenv("LITELLM_MODEL_ID", "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct"),
         help="The model ID to use for the specified model type",
     )
     parser.add_argument(
@@ -187,21 +187,25 @@ def run_with_timeout(func, timeout):
             return "Timed Out"
 
 
-def answer_single_question(example, model, answers_file, action_type, search_model_id=None):
+def answer_single_question(example, model, answers_file, action_type, search_model_id=None, majority_votes=1):
     if action_type == "vanilla":
         agent = model
     elif action_type == "codeact":
         agent = CodeAgent(
-            tools=[OpenDeepSearchTool(
-                model_name=search_model_id or model.model_id)],
+            tools=[
+                ListDeepSearchTool(model_name=search_model_id or model.model_id), 
+                OpenDeepSearchTool(model_name=search_model_id or model.model_id)],
             model=model,
             additional_authorized_imports=["numpy"],
             max_steps=15,
         )
     elif action_type == "tool-calling":
         agent = ToolCallingAgent(
-            tools=[OpenDeepSearchTool(
-                model_name=search_model_id or model.model_id), PythonInterpreterTool()],
+            tools=[
+                ListDeepSearchTool(model_name=search_model_id or model.model_id), 
+                OpenDeepSearchTool(model_name=search_model_id or model.model_id), 
+                PythonInterpreterTool()
+            ],
             model=model,
             # additional_authorized_imports=["numpy"],
             max_steps=15,
@@ -213,15 +217,14 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
 
     try:
         answers = []
-        for majority_step in range(1):
+        tokens = 0
+        for _ in range(majority_votes):
             if action_type == "vanilla":
                 def get_vanilla_response():
-                    response = agent(
-                        [{"role": "user", "content": augmented_question}])
+                    response = agent([{"role": "user", "content": augmented_question}])
                     return response.content, agent.last_output_token_count
-
-                answer, token_count = run_with_timeout(
-                    get_vanilla_response, TIMEOUT_SECONDS)
+                
+                answer, tokens = run_with_timeout(get_vanilla_response, TIMEOUT_SECONDS)
                 intermediate_steps = answer
             else:
                 def get_agent_response():
@@ -232,28 +235,26 @@ def answer_single_question(example, model, answers_file, action_type, search_mod
                         if isinstance(step, ActionStep):
                             step.agent_memory = None
                     return response, token_count, str(agent.memory.steps)
+                
+                answer, tokens, intermediate_steps = run_with_timeout(get_agent_response, TIMEOUT_SECONDS)
+            answers.append(answer)
+            token_count = tokens
+            
+        if len(answers) > 1:
+            formatted_answers = "\n".join(
+                [f"{i}. {a}" for i, a in enumerate(answers, start=1)])
 
-                answer, token_count, intermediate_steps = run_with_timeout(
-                    get_agent_response, TIMEOUT_SECONDS)
-                answers.append(answer)
+            user_content = f"""Question: {augmented_question}
 
-        end_time = time.time()
-        formatted_answers = "\n".join(
-            [f"{i+1}. {a}" for i, a in enumerate(answers)])
+            Answers:
+            {formatted_answers}
 
-        # Combine with the question
-        user_content = f"""Question: {augmented_question}
+            Choose the most frequent and relevant answer. Output it verbatim.
+            """
+            messages = [{"role": "system", "content": MAJORITY_VOTE_PROMPT}]
+            messages.append({"role": "user", "content": user_content})
+            answer = model(messages).content
 
-        Answers:
-        {formatted_answers}
-
-        Choose the most frequent and relevant answer. Output it verbatim.
-        """
-
-        # Add to message list
-        messages = [{"role": "system", "content": MAJORITY_VOTE_PROMPT}]
-        messages.append({"role": "user", "content": user_content})
-        # answer = model(messages).content
     except Exception as e:
         print("Error on ", augmented_question, e)
         intermediate_steps = []
@@ -282,6 +283,7 @@ def answer_questions(
     parallel_workers: int = 32,
     search_model_id: str = None,
     num_trials: int = 1,
+    majority_votes: int = 1,
 ):
     date = date or datetime.date.today().isoformat()
     model_id = model.model_id
@@ -309,8 +311,7 @@ def answer_questions(
 
             with ThreadPoolExecutor(max_workers=parallel_workers) as exe:
                 futures = [
-                    exe.submit(answer_single_question, example, model,
-                               file_name, action_type, search_model_id)
+                    exe.submit(answer_single_question, example, model, file_name, action_type, search_model_id, majority_votes)
                     for example in examples_todo
                 ]
                 for f in tqdm(as_completed(futures), total=len(examples_todo), desc="Processing tasks"):
@@ -321,18 +322,19 @@ def answer_questions(
 
 if __name__ == "__main__":
     args = parse_arguments()
-
+    
+    config = load_config('eval')
     eval_ds = load_eval_dataset(args.eval_tasks)
 
     if args.model_type == "LiteLLMModel":
         model = LiteLLMModel(
             args.model_id,
-            max_completion_tokens=8192,
-            temperature=0.2,
+            max_completion_tokens=config.get("max_tokens", 8192),
+            temperature=config.get("temperature", 0.2),
             # api_key=os.getenv("OPENROUTER_API_KEY"),
         )
     else:
-        model = HfApiModel(args.model_id, provider="together", max_tokens=8192)
+        model = HfApiModel(args.model_id, provider="together", max_tokens=config.get("max_tokens", 8192))
 
     answer_questions(
         eval_ds,
@@ -342,4 +344,5 @@ if __name__ == "__main__":
         parallel_workers=args.parallel_workers,
         search_model_id=args.search_model_id,
         num_trials=args.num_trials,
+        majority_votes=config.get("majority_vote", 1),
     )

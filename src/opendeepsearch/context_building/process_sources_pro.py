@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 from opendeepsearch.context_scraping.crawl4ai_scraper import WebScraper
 from opendeepsearch.ranking_models.infinity_rerank import InfinitySemanticSearcher
 from opendeepsearch.ranking_models.jina_reranker import JinaReranker
 from opendeepsearch.ranking_models.chunker import Chunker 
+from opendeepsearch.config.core import load_config
 
 @dataclass
 class Source:
@@ -14,7 +15,7 @@ class Source:
 class SourceProcessor:
     def __init__(
         self, 
-        top_results: int = 5,
+        top_results: int = None,
         strategies: List[str] = ["no_extraction"],
         filter_content: bool = True,
         reranker: str = "infinity"
@@ -25,8 +26,13 @@ class SourceProcessor:
             strategies=self.strategies, 
             filter_content=self.filter_content
         )
-        self.top_results = top_results
-        self.chunker = Chunker()
+        
+        config = load_config("source_processor")
+        self.top_results = top_results or config.get("top_results", 5)
+        self.chunker = Chunker(
+            chunk_size=config.get("chunk_size", 1024),
+            chunk_overlap=config.get("chunk_overlap", 256), 
+        )
         
         # Initialize the appropriate reranker
         if reranker.lower() == "jina":
@@ -41,7 +47,8 @@ class SourceProcessor:
         sources: List[dict], 
         num_elements: int, 
         query: str, 
-        pro_mode: bool = False
+        pro_mode: bool = False,
+        chunk: bool = True
     ) -> List[dict]:
         try:
             valid_sources = self._get_valid_sources(sources, num_elements)
@@ -55,10 +62,10 @@ class SourceProcessor:
                 if not wiki_sources:
                     return sources.data
                 # If Wikipedia article exists, only process that
-                valid_sources = wiki_sources[:1]  # Take only the first Wikipedia source
+                valid_sources = wiki_sources # Take only the first Wikipedia source (why?)
 
             html_contents = await self._fetch_html_contents([s[1]['link'] for s in valid_sources])
-            return self._update_sources_with_content(sources.data, valid_sources, html_contents, query)
+            return self._update_sources_with_content(sources.data, valid_sources, html_contents, query, chunk)
         except Exception as e:
             print(f"Error in process_sources: {e}")
             return sources
@@ -95,9 +102,10 @@ class SourceProcessor:
         sources: List[dict],
         valid_sources: List[Tuple[int, dict]], 
         html_contents: List[str],
-        query: str
+        query: str,
+        chunk: bool = True
     ) -> List[dict]:
         for (i, source), html in zip(valid_sources, html_contents):
-            source['html'] = self._process_html_content(html, query)
+            source['html'] = self._process_html_content(html, query) if chunk else [html]
             # sources[i] = source
         return sources
