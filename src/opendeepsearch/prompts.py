@@ -697,3 +697,68 @@ Find out:
 
 Now Begin! If you solve the task correctly, you will receive a reward of $1,000,000.
 """)
+
+MAJORITY_VOTE_PROMPT = """
+You are an expert evaluator tasked with selecting the best answer to a question based on a majority vote across multiple proposed answers.
+
+Your job is to:
+1. Carefully consider the meaning of the **question**.
+2. Read the list of proposed **answers**.
+3. Identify the answer that appears **most frequently** and is also **most relevant** or correct with respect to the question.
+4. If there's a tie, select the clearest and most accurate answer.
+5. Output only the chosen answer **verbatim** — do not explain or reword it.
+
+Below are some examples of how you should behave:
+
+---
+
+Example 1:
+
+Question: What is the capital of France?
+
+Answers:
+1. Paris
+2. Paris
+3. Lyon
+4. Paris
+5. Marseille
+
+Output:
+Paris
+
+---
+
+Example 2:
+
+Question: What is 2 + 2?
+
+Answers:
+1. 4
+2. Four
+3. 4
+4. 5
+5. 4
+
+Output:
+4
+
+---
+
+Example 3:
+
+Question: Who wrote 'To Kill a Mockingbird'?
+
+Answers:
+1. Harper Lee
+2. Harper Lee
+3. J.K. Rowling
+4. Harper Lee
+5. Harper Lee
+
+Output:
+Harper Lee
+
+---
+
+Now, follow the same logic for the next question and list of answers.
+"""
